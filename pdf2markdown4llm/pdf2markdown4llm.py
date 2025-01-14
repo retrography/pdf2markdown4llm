@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List, Dict, Tuple, Optional, Union
+from typing import List, Dict, Tuple, Optional, Union, Callable
 from collections import Counter
 from operator import itemgetter
 import re
@@ -7,6 +7,8 @@ import pdfplumber
 from pdfplumber.page import Page
 from pdfplumber.table import Table
 import traceback
+
+ProgressCallback = Callable[[float, str], None]
 
 @dataclass
 class TextContent:
@@ -215,53 +217,72 @@ class MarkdownConverter:
         return '\n'.join(markdown_lines) + '\n\n'
 
 class PDF2Markdown4LLM:
-    def __init__(self, remove_headers: bool = False, table_header: str = "###"):
+    def __init__(self, 
+                 remove_headers: bool = False, 
+                 table_header: str = "###",
+                 progress_callback: Optional[ProgressCallback] = None):
         self.remove_headers = remove_headers
         self.table_header = table_header
         self.markdown_converter = MarkdownConverter()
+        self.progress_callback = progress_callback
+
+    def _report_progress(self, progress: float, message: str) -> None:
+        """Report progress through the callback if it exists."""
+        if self.progress_callback:
+            self.progress_callback(progress, message)
 
     def _collect_font_statistics(self, pdf) -> Tuple[List[float], Counter]:
-        """Collect font statistics from PDF."""
+        """Collect font statistics from PDF with progress tracking."""
         font_sizes: List[float] = []
         font_size_text_count = Counter()
+        total_pages = len(pdf.pages)
         
-        for page in pdf.pages:
+        for i, page in enumerate(pdf.pages):
+            # Report progress for first phase (0-50%)
+            progress = (i / total_pages) * 50
+            self._report_progress(progress, f"Analyzing fonts: page {i + 1}/{total_pages}")
+            
             tables = page.find_tables()
             non_table_content = page
             
-            # Filter valid tables and process them
             for table in tables:
                 try:
-                    # Check if table bounds are within page bounds
                     if (table.bbox[0] >= 0 and table.bbox[1] >= 0 and 
                         table.bbox[2] <= page.bbox[2] and 
                         table.bbox[3] <= page.bbox[3]):
                         non_table_content = non_table_content.outside_bbox(table.bbox)
                 except ValueError:
-                    continue  # Skip invalid tables
+                    continue
             
             words = non_table_content.extract_words(extra_attrs=["size"])
-            # Round font sizes when collecting statistics
             font_sizes.extend(round_font_size(word["size"]) for word in words)
             for word in words:
                 font_size_text_count[round_font_size(word["size"])] += len(word["text"])
         
         return font_sizes, font_size_text_count
 
-    def convert(self, pdf_path: str) -> None:
-        """Convert PDF to Markdown and save to file."""
+    def convert(self, pdf_path: str) -> str:
+        """Convert PDF to Markdown with progress tracking."""
         try:
             with pdfplumber.open(pdf_path) as pdf:
+                self._report_progress(0, "Starting conversion...")
+                
                 font_sizes, font_size_text_count = self._collect_font_statistics(pdf)
                 
                 if not font_sizes:
                     raise ValueError("No text found in the PDF.")
                 
-                classifier = FontSizeClassifier(font_sizes, font_size_text_count)
+                self._report_progress(50, "Font analysis complete, starting content extraction...")
                 
+                classifier = FontSizeClassifier(font_sizes, font_size_text_count)
                 md_content: List[str] = []
+                total_pages = len(pdf.pages)
                 
                 for i, page in enumerate(pdf.pages, 1):
+                    # Report progress for second phase (50-100%)
+                    progress = 50 + (i / total_pages) * 50
+                    self._report_progress(progress, f"Converting page {i}/{total_pages}")
+                    
                     extractor = PDFContentExtractor(
                         page, 
                         classifier.size_to_level, 
@@ -287,6 +308,8 @@ class PDF2Markdown4LLM:
                                     self.table_header
                                 )
                             )
+                
+                self._report_progress(100, "Conversion complete!")
                 
                 return "".join(md_content)
                 
