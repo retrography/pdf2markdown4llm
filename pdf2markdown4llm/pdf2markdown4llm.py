@@ -22,14 +22,18 @@ class ProgressInfo:
     percentage: float
     message: str
 
-
-ProgressCallback = Callable[[ProgressInfo], None]
+@dataclass
+class TextStyle:
+    """Text style information."""
+    is_bold: bool = False
+    font_name: Optional[str] = None
 
 @dataclass
 class TextContent:
     text: str
     top: float
     is_header: bool
+    style: TextStyle
     level: Optional[str] = None
 
 @dataclass
@@ -38,9 +42,47 @@ class TableContent:
     top: float
 
 Content = Union[TextContent, TableContent]
+ProgressCallback = Callable[[ProgressInfo], None]
+
+
 def round_font_size(size: float) -> float:
     """Round font size to one decimal place."""
     return round(size, 1)
+
+def is_bold_font(fontname: Optional[str]) -> bool:
+    """
+    Determine if a font is bold based on its name.
+    Uses stricter rules to prevent over-detection of bold text.
+    """
+    if not fontname:
+        return False
+    
+    # Convert font name to lowercase for comparison
+    fontname_lower = fontname.lower()
+    
+    # Common bold font name patterns
+    bold_indicators = {
+        'bold',      # Most common indicator
+        '-bold',     # Often used with hyphen
+        '.bold',     # Sometimes used with dot
+        ' bold',     # Used with space
+    }
+    
+    # Exclude certain terms that might contain 'bold' but aren't necessarily bold
+    exclude_terms = {
+        'semibold',  # Usually lighter than true bold
+        'demibold',  # Usually lighter than true bold
+        'book',      # Regular weight
+        'light',     # Light weight
+        'regular',   # Regular weight
+    }
+    
+    # First check if any exclusion terms are in the font name
+    if any(term in fontname_lower for term in exclude_terms):
+        return False
+    
+    # Then check for bold indicators
+    return any(indicator in fontname_lower for indicator in bold_indicators)
 
 class FontSizeClassifier:
     def __init__(self, font_sizes: List[float], font_size_counts: Counter):
@@ -122,17 +164,20 @@ class PDFContentExtractor:
             return ""
         return ' '.join(str(cell).split())
 
-    def _process_text_line(self, text: str, size: float, top: float) -> TextContent:
+    def _process_text_line(self, text: str, size: float, top: float, fontname: Optional[str]) -> TextContent:
         """Process a line of text and create appropriate TextContent."""
         rounded_size = round_font_size(size)
+        style = TextStyle(is_bold=is_bold_font(fontname), font_name=fontname)
+        
         if rounded_size == self.normal_text_size:
-            return TextContent(text=text, top=top, is_header=False)
+            return TextContent(text=text, top=top, is_header=False, style=style)
         
         level = self.size_to_level.get(rounded_size, "")
         return TextContent(
             text=text,
             top=top,
             is_header=bool(level),
+            style=style,
             level=level
         )
 
@@ -157,40 +202,82 @@ class PDFContentExtractor:
             try:
                 non_table_content = non_table_content.outside_bbox(table.bbox)
             except ValueError:
-                continue  # Skip tables that cause bounding box errors
+                continue
         
-        # Process text content
-        words = non_table_content.extract_words(extra_attrs=["size"])
-        current_line: List[str] = []
+        # Process text content with font information
+        words = non_table_content.extract_words(extra_attrs=["size", "fontname"])
+        current_line: List[Tuple[str, Optional[str]]] = []  # (text, fontname)
         current_size: Optional[float] = None
         current_top: Optional[float] = None
         
         for word in words:
             if current_top is None:
                 current_top = word["top"]
-                current_size = round_font_size(word["size"])  # Round size when setting
-                current_line = [word["text"]]
+                current_size = round_font_size(word["size"])
+                current_line = [(word["text"], word.get("fontname"))]
             elif abs(word["top"] - current_top) <= 3:  # Same line
-                current_line.append(word["text"])
+                current_line.append((word["text"], word.get("fontname")))
             else:  # New line
                 if current_size is not None and current_top is not None:
-                    text = " ".join(current_line)
-                    contents.append(self._process_text_line(text, current_size, current_top))
+                    # Process line with mixed styles
+                    processed_text = self._process_mixed_styles(current_line)
+                    contents.append(self._process_text_line(
+                        processed_text,
+                        current_size,
+                        current_top,
+                        current_line[0][1]  # Use first word's font as reference
+                    ))
                 
                 current_top = word["top"]
-                current_size = round_font_size(word["size"])  # Round size when setting
-                current_line = [word["text"]]
+                current_size = round_font_size(word["size"])
+                current_line = [(word["text"], word.get("fontname"))]
         
         # Process last line if exists
         if current_line and current_size is not None and current_top is not None:
-            text = " ".join(current_line)
-            contents.append(self._process_text_line(text, current_size, current_top))
+            processed_text = self._process_mixed_styles(current_line)
+            contents.append(self._process_text_line(
+                processed_text,
+                current_size,
+                current_top,
+                current_line[0][1]
+            ))
         
         # Add valid tables
         for table in valid_tables:
             contents.append(TableContent(table=table, top=table.bbox[1]))
         
         return sorted(contents, key=lambda x: x.top)
+
+    def _process_mixed_styles(self, line: List[Tuple[str, Optional[str]]]) -> str:
+        """Process a line with mixed text styles."""
+        result = []
+        current_bold = False
+        current_text = []
+
+        for text, fontname in line:
+            is_bold = is_bold_font(fontname)
+            
+            if is_bold != current_bold:
+                if current_text:
+                    text_segment = " ".join(current_text)
+                    if current_bold:
+                        result.append(f"**{text_segment}**")
+                    else:
+                        result.append(text_segment)
+                    current_text = []
+                current_bold = is_bold
+            
+            current_text.append(text)
+        
+        # Process remaining text
+        if current_text:
+            text_segment = " ".join(current_text)
+            if current_bold:
+                result.append(f"**{text_segment}**")
+            else:
+                result.append(text_segment)
+        
+        return " ".join(result)
 
 class MarkdownConverter:
     @staticmethod
