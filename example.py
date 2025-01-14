@@ -7,7 +7,7 @@ def progress_callback(progress):
 
 
 # Initialize converter
-converter = PDF2Markdown4LLM(remove_headers=False, table_header="### Table", progress_callback=progress_callback)
+converter = PDF2Markdown4LLM(remove_headers=False, skip_empty_tables=True, table_header="### Table", progress_callback=progress_callback)
 
 # Convert PDF to Markdown
 markdown_content = converter.convert("input.pdf")

@@ -234,21 +234,91 @@ class PDF2Markdown4LLM:
     def __init__(self, 
                  remove_headers: bool = False, 
                  table_header: str = "###",
+                 skip_empty_tables: bool = False, 
+                 keep_empty_table_header: bool = False,
                  progress_callback: Optional[ProgressCallback] = None):
         self.remove_headers = remove_headers
         self.table_header = table_header
+        self.skip_empty_tables = skip_empty_tables
+        self.keep_empty_table_header = keep_empty_table_header
         self.markdown_converter = MarkdownConverter()
         self.progress_callback = progress_callback
 
+    def _is_table_empty(self, table: Table) -> bool:
+        """
+        Checks if the table is empty.
+        
+        An empty table is defined as:
+        1. Having no cells
+        2. All cells are empty (None, empty string, or whitespace)
+        3. Table data (extracted content) is empty
+        """
+        try:
+            # Check if table has no cells
+            if not table.cells:
+                return True
+            
+            def is_cell_empty(cell) -> bool:
+                """
+                Checks if a single cell is empty.
+                
+                - None is considered empty
+                - Numeric types (int, float) are considered non-empty
+                - For dictionaries, the 'text' key's stripped value determines emptiness
+                - Strings are empty if stripped value is empty
+                - Other types are evaluated by converting to string and stripping
+                """
+                if cell is None:
+                    return True
+                
+                if isinstance(cell, (int, float)):
+                    return False  # Numbers are always considered non-empty
+                
+                if isinstance(cell, dict):
+                    return not cell.get('text', '').strip()
+                
+                if isinstance(cell, str):
+                    return not cell.strip()
+                
+                try:
+                    return not str(cell).strip()
+                except Exception:
+                    return True
+
+            # Extract table data and check if it's empty
+            table_data = table.extract()
+            if not table_data:
+                return True
+
+            # Check if all rows are empty
+            if all(not any(row) for row in table_data):
+                return True
+
+            # Check the actual content of cells
+            return all(
+                is_cell_empty(cell)
+                for row in table_data
+                for cell in row
+            )
+
+        except Exception as e:
+            # Log error if needed
+            # print(f"Error in _is_table_empty: {e}")
+            return False  # Default to considering the table non-empty in case of error
+        
     def _create_progress_info(self, 
                             phase: ProcessPhase, 
                             current_page: int, 
                             total_pages: int, 
                             message: str) -> ProgressInfo:
         """Create a ProgressInfo object with calculated percentage."""
-        base_percentage = 50 if phase == ProcessPhase.CONVERSION else 0
-        phase_progress = (current_page / total_pages) * 50
-        total_percentage = base_percentage + phase_progress
+        if phase == ProcessPhase.ANALYSIS:
+            # Analysis phase goes from 0% to 70%
+            total_percentage = (current_page / total_pages) * 70
+        else:
+            # Conversion phase goes from 70% to 100%
+            # Start at 70% and progress through remaining 30%
+            total_percentage = 70 + ((current_page / total_pages) * 30)
         
         return ProgressInfo(
             phase=phase,
@@ -296,7 +366,15 @@ class PDF2Markdown4LLM:
                 font_size_text_count[round_font_size(word["size"])] += len(word["text"])
         
         return font_sizes, font_size_text_count
-
+    
+    def _process_empty_table(self) -> str:
+        """
+        Handles the header processing when dealing with an empty table.
+        """
+        if self.keep_empty_table_header:
+            return f"{self.table_header}\n\n"  # Returns only the header.
+        return ""  # Returns an empty string if skipping completely.
+    
     def convert(self, pdf_path: str) -> str:
         """Convert PDF to Markdown with detailed progress tracking."""
         try:
@@ -357,6 +435,11 @@ class PDF2Markdown4LLM:
                                 else:
                                     md_content.append(f"{text}\n")
                         elif isinstance(content, TableContent):
+                            # Check for empty tables and skip according to settings
+                            if self.skip_empty_tables and self._is_table_empty(content.table):
+                                md_content.append(self._process_empty_table())
+                                continue
+                                
                             md_content.append(
                                 self.markdown_converter.table_to_markdown(
                                     content.table, 
@@ -377,5 +460,4 @@ class PDF2Markdown4LLM:
                 
         except Exception as e:
             raise RuntimeError(f"Failed to convert PDF to Markdown: {str(e)} traceback: {traceback.format_exc()}")
-
 
