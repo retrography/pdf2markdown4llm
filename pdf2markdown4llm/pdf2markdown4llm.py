@@ -7,8 +7,23 @@ import pdfplumber
 from pdfplumber.page import Page
 from pdfplumber.table import Table
 import traceback
+from enum import Enum
 
-ProgressCallback = Callable[[float, str], None]
+class ProcessPhase(Enum):
+    ANALYSIS = "analysis"
+    CONVERSION = "conversion"
+
+@dataclass
+class ProgressInfo:
+    """Progress information for PDF processing."""
+    phase: ProcessPhase
+    current_page: int
+    total_pages: int
+    percentage: float
+    message: str
+
+
+ProgressCallback = Callable[[ProgressInfo], None]
 
 @dataclass
 class TextContent:
@@ -23,7 +38,6 @@ class TableContent:
     top: float
 
 Content = Union[TextContent, TableContent]
-
 def round_font_size(size: float) -> float:
     """Round font size to one decimal place."""
     return round(size, 1)
@@ -226,10 +240,28 @@ class PDF2Markdown4LLM:
         self.markdown_converter = MarkdownConverter()
         self.progress_callback = progress_callback
 
-    def _report_progress(self, progress: float, message: str) -> None:
+    def _create_progress_info(self, 
+                            phase: ProcessPhase, 
+                            current_page: int, 
+                            total_pages: int, 
+                            message: str) -> ProgressInfo:
+        """Create a ProgressInfo object with calculated percentage."""
+        base_percentage = 50 if phase == ProcessPhase.CONVERSION else 0
+        phase_progress = (current_page / total_pages) * 50
+        total_percentage = base_percentage + phase_progress
+        
+        return ProgressInfo(
+            phase=phase,
+            current_page=current_page,
+            total_pages=total_pages,
+            percentage=total_percentage,
+            message=message
+        )
+
+    def _report_progress(self, progress_info: ProgressInfo) -> None:
         """Report progress through the callback if it exists."""
         if self.progress_callback:
-            self.progress_callback(progress, message)
+            self.progress_callback(progress_info)
 
     def _collect_font_statistics(self, pdf) -> Tuple[List[float], Counter]:
         """Collect font statistics from PDF with progress tracking."""
@@ -238,9 +270,13 @@ class PDF2Markdown4LLM:
         total_pages = len(pdf.pages)
         
         for i, page in enumerate(pdf.pages):
-            # Report progress for first phase (0-50%)
-            progress = (i / total_pages) * 50
-            self._report_progress(progress, f"Analyzing: page {i + 1}/{total_pages}")
+            progress_info = self._create_progress_info(
+                phase=ProcessPhase.ANALYSIS,
+                current_page=i + 1,
+                total_pages=total_pages,
+                message=f"Analyzing"
+            )
+            self._report_progress(progress_info)
             
             tables = page.find_tables()
             non_table_content = page
@@ -262,26 +298,45 @@ class PDF2Markdown4LLM:
         return font_sizes, font_size_text_count
 
     def convert(self, pdf_path: str) -> str:
-        """Convert PDF to Markdown with progress tracking."""
+        """Convert PDF to Markdown with detailed progress tracking."""
         try:
             with pdfplumber.open(pdf_path) as pdf:
-                self._report_progress(0, "Starting conversion...")
+                # Initial progress report
+                initial_progress = self._create_progress_info(
+                    phase=ProcessPhase.ANALYSIS,
+                    current_page=0,
+                    total_pages=len(pdf.pages),
+                    message="Starting PDF analysis"
+                )
+                self._report_progress(initial_progress)
                 
+                # Analyze font statistics
                 font_sizes, font_size_text_count = self._collect_font_statistics(pdf)
                 
                 if not font_sizes:
                     raise ValueError("No text found in the PDF.")
                 
-                self._report_progress(50, "Analysis complete, starting content extraction...")
+                # Report analysis completion
+                analysis_complete = self._create_progress_info(
+                    phase=ProcessPhase.CONVERSION,
+                    current_page=0,
+                    total_pages=len(pdf.pages),
+                    message="Analysis complete, beginning content extraction"
+                )
+                self._report_progress(analysis_complete)
                 
                 classifier = FontSizeClassifier(font_sizes, font_size_text_count)
                 md_content: List[str] = []
                 total_pages = len(pdf.pages)
                 
                 for i, page in enumerate(pdf.pages, 1):
-                    # Report progress for second phase (50-100%)
-                    progress = 50 + (i / total_pages) * 50
-                    self._report_progress(progress, f"Converting page {i}/{total_pages}")
+                    progress_info = self._create_progress_info(
+                        phase=ProcessPhase.CONVERSION,
+                        current_page=i,
+                        total_pages=total_pages,
+                        message=f"Converting content to Markdown"
+                    )
+                    self._report_progress(progress_info)
                     
                     extractor = PDFContentExtractor(
                         page, 
@@ -309,10 +364,18 @@ class PDF2Markdown4LLM:
                                 )
                             )
                 
-                self._report_progress(100, "Conversion complete!")
+                # Final progress report
+                completion_progress = self._create_progress_info(
+                    phase=ProcessPhase.CONVERSION,
+                    current_page=total_pages,
+                    total_pages=total_pages,
+                    message="Conversion complete"
+                )
+                self._report_progress(completion_progress)
                 
                 return "".join(md_content)
                 
         except Exception as e:
             raise RuntimeError(f"Failed to convert PDF to Markdown: {str(e)} traceback: {traceback.format_exc()}")
+
 
