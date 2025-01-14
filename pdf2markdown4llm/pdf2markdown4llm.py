@@ -240,7 +240,7 @@ class PDF2Markdown4LLM:
         for i, page in enumerate(pdf.pages):
             # Report progress for first phase (0-50%)
             progress = (i / total_pages) * 50
-            self._report_progress(progress, f"Analyzing fonts: page {i + 1}/{total_pages}")
+            self._report_progress(progress, f"Analyzing: page {i + 1}/{total_pages}")
             
             tables = page.find_tables()
             non_table_content = page
@@ -272,7 +272,7 @@ class PDF2Markdown4LLM:
                 if not font_sizes:
                     raise ValueError("No text found in the PDF.")
                 
-                self._report_progress(50, "Font analysis complete, starting content extraction...")
+                self._report_progress(50, "Analysis complete, starting content extraction...")
                 
                 classifier = FontSizeClassifier(font_sizes, font_size_text_count)
                 md_content: List[str] = []
