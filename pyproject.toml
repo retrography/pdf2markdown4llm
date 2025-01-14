@@ -7,7 +7,7 @@ name = "pdf2markdown4llm"
 version = "0.1.1"
 description = "A library to convert PDF files to Markdown format."
 readme = "README.md"
-license = {text = "MIT"}
+license = {file = "LICENSE"}
 authors = [
     {name = "HawkClaws", email = "hogehoge@example.com"}
 ]
