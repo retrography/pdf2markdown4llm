@@ -2,6 +2,10 @@
 
 PDF2Markdown4LLM is a Python library that converts PDF documents to Markdown format, specifically optimized for Large Language Models (LLMs). It intelligently preserves document structure, identifies headers based on font sizes, and handles tables while maintaining the original document flow.
 
+
+## Demo
+[demo](https://huggingface.co/spaces/HawkClaws/pdf2markdown4llm_demo)
+
 ## Features
 
 - Intelligent header detection based on font size analysis
