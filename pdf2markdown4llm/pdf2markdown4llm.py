@@ -464,87 +464,84 @@ class PDF2Markdown4LLM:
     
     def convert(self, pdf_path: str) -> str:
         """Convert PDF to Markdown with detailed progress tracking."""
-        try:
-            with pdfplumber.open(pdf_path) as pdf:
-                # Initial progress report
-                initial_progress = self._create_progress_info(
-                    phase=ProcessPhase.ANALYSIS,
-                    current_page=0,
-                    total_pages=len(pdf.pages),
-                    message="Starting PDF analysis"
-                )
-                self._report_progress(initial_progress)
-                
-                # Analyze font statistics
-                font_sizes, font_size_text_count = self._collect_font_statistics(pdf)
-                
-                if not font_sizes:
-                    raise ValueError("No text found in the PDF.")
-                
-                # Report analysis completion
-                analysis_complete = self._create_progress_info(
+        with pdfplumber.open(pdf_path) as pdf:
+            # Initial progress report
+            initial_progress = self._create_progress_info(
+                phase=ProcessPhase.ANALYSIS,
+                current_page=0,
+                total_pages=len(pdf.pages),
+                message="Starting PDF analysis"
+            )
+            self._report_progress(initial_progress)
+            
+            # Analyze font statistics
+            font_sizes, font_size_text_count = self._collect_font_statistics(pdf)
+            
+            if not font_sizes:
+                raise ValueError("No text found in the PDF.")
+            
+            # Report analysis completion
+            analysis_complete = self._create_progress_info(
+                phase=ProcessPhase.CONVERSION,
+                current_page=0,
+                total_pages=len(pdf.pages),
+                message="Analysis complete, beginning content extraction"
+            )
+            self._report_progress(analysis_complete)
+            
+            classifier = FontSizeClassifier(font_sizes, font_size_text_count)
+            md_content: List[str] = []
+            total_pages = len(pdf.pages)
+            
+            for i, page in enumerate(pdf.pages, 1):
+                progress_info = self._create_progress_info(
                     phase=ProcessPhase.CONVERSION,
-                    current_page=0,
-                    total_pages=len(pdf.pages),
-                    message="Analysis complete, beginning content extraction"
-                )
-                self._report_progress(analysis_complete)
-                
-                classifier = FontSizeClassifier(font_sizes, font_size_text_count)
-                md_content: List[str] = []
-                total_pages = len(pdf.pages)
-                
-                for i, page in enumerate(pdf.pages, 1):
-                    progress_info = self._create_progress_info(
-                        phase=ProcessPhase.CONVERSION,
-                        current_page=i,
-                        total_pages=total_pages,
-                        message=f"Converting content to Markdown"
-                    )
-                    self._report_progress(progress_info)
-                    
-                    extractor = PDFContentExtractor(
-                        page, 
-                        classifier.size_to_level, 
-                        classifier.normal_text_size
-                    )
-                    contents = extractor.extract_contents()
-                    
-                    for content in contents:
-                        if isinstance(content, TextContent):
-                            text = content.text.strip()
-                            if text:
-                                if self.remove_headers:
-                                    text = self.markdown_converter.remove_markdown_headers(text)
-                                
-                                if content.is_header:
-                                    md_content.append(f"\n{content.level} {text}\n\n")
-                                else:
-                                    md_content.append(f"{text}\n")
-                        elif isinstance(content, TableContent):
-                            # Check for empty tables and skip according to settings
-                            if self.skip_empty_tables and self._is_table_empty(content.table):
-                                md_content.append(self._process_empty_table())
-                                continue
-                                
-                            md_content.append(
-                                self.markdown_converter.table_to_markdown(
-                                    content.table, 
-                                    self.table_header
-                                )
-                            )
-                
-                # Final progress report
-                completion_progress = self._create_progress_info(
-                    phase=ProcessPhase.CONVERSION,
-                    current_page=total_pages,
+                    current_page=i,
                     total_pages=total_pages,
-                    message="Conversion complete"
+                    message=f"Converting content to Markdown"
                 )
-                self._report_progress(completion_progress)
+                self._report_progress(progress_info)
                 
-                return "".join(md_content)
+                extractor = PDFContentExtractor(
+                    page, 
+                    classifier.size_to_level, 
+                    classifier.normal_text_size
+                )
+                contents = extractor.extract_contents()
                 
-        except Exception as e:
-            raise RuntimeError(f"Failed to convert PDF to Markdown: {str(e)} traceback: {traceback.format_exc()}")
+                for content in contents:
+                    if isinstance(content, TextContent):
+                        text = content.text.strip()
+                        if text:
+                            if self.remove_headers:
+                                text = self.markdown_converter.remove_markdown_headers(text)
+                            
+                            if content.is_header:
+                                md_content.append(f"\n{content.level} {text}\n\n")
+                            else:
+                                md_content.append(f"{text}\n")
+                    elif isinstance(content, TableContent):
+                        # Check for empty tables and skip according to settings
+                        if self.skip_empty_tables and self._is_table_empty(content.table):
+                            md_content.append(self._process_empty_table())
+                            continue
+                        
+                        md_content.append(
+                            self.markdown_converter.table_to_markdown(
+                                content.table, 
+                                self.table_header
+                            )
+                        )
+            
+            # Final progress report
+            completion_progress = self._create_progress_info(
+                phase=ProcessPhase.CONVERSION,
+                current_page=total_pages,
+                total_pages=total_pages,
+                message="Conversion complete"
+            )
+            self._report_progress(completion_progress)
+            
+            return "".join(md_content)
+
 
