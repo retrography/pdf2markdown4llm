@@ -1,13 +1,12 @@
 from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional, Union, Callable
 from collections import Counter
-from operator import itemgetter
 import re
 import pdfplumber
 from pdfplumber.page import Page
 from pdfplumber.table import Table
-import traceback
 from enum import Enum
+import unicodedata
 
 class ProcessPhase(Enum):
     ANALYSIS = "analysis"
@@ -151,11 +150,116 @@ class FontSizeClassifier:
             size: level for size, level in zip(heading_sizes, levels)
         }
 
+class LigatureHandler:
+    """Handles ligature normalization and character encoding issues in PDF text extraction."""
+    
+    # Expanded ligature mappings including more common combinations
+    EXTENDED_LIGATURES: Dict[str, str] = {
+        # Standard Latin ligatures
+        "ﬀ": "ff",    # U+FB00
+        "ﬃ": "ffi",   # U+FB03
+        "ﬄ": "ffl",   # U+FB04
+        "ﬁ": "fi",    # U+FB01
+        "ﬂ": "fl",    # U+FB02
+        
+        # Additional common typographic ligatures
+        "ﬆ": "st",    # U+FB06
+        "ﬅ": "ft",    # U+FB05
+        "Æ": "AE",    # U+00C6
+        "æ": "ae",    # U+00E6
+        "Œ": "OE",    # U+0152
+        "œ": "oe",    # U+0153
+        
+        # Common typesetting combinations
+        "ﬃ": "ffi",   # Repeated for completeness
+        "ﬄ": "ffl",   # Repeated for completeness
+        "ﬁ": "fi",    # Repeated for completeness
+        "ﬂ": "fl",    # Repeated for completeness
+        "ﬀ": "ff",    # Repeated for completeness
+        
+        # Additional discretionary ligatures
+        "ct": "ct",   # Sometimes appears as a single glyph
+        "sp": "sp",   # Sometimes appears as a single glyph
+        "st": "st",   # Sometimes appears as a single glyph
+        "tt": "tt",   # Sometimes appears as a single glyph
+    }
+
+    @classmethod
+    def normalize_text(cls, text: str, normalization_mode: str = 'NFKD') -> str:
+        """
+        Normalize text by handling ligatures and applying Unicode normalization.
+        
+        Args:
+            text: Input text to normalize
+            normalization_mode: Unicode normalization mode ('NFC', 'NFKC', 'NFD', 'NFKD')
+        
+        Returns:
+            Normalized text with expanded ligatures
+        """
+        if not text:
+            return text
+            
+        # First handle known ligatures
+        for ligature, replacement in cls.EXTENDED_LIGATURES.items():
+            text = text.replace(ligature, replacement)
+            
+        # Apply Unicode normalization
+        text = unicodedata.normalize(normalization_mode, text)
+        
+        # Remove NULL bytes
+        text = text.replace('\x00', '')
+        
+        return text
+
+    @classmethod
+    def clean_extracted_text(cls, text: str, remove_control_chars: bool = True) -> str:
+        """
+        Clean extracted text by removing problematic characters and normalizing content.
+        
+        Args:
+            text: Input text to clean
+            remove_control_chars: Whether to remove control characters
+            
+        Returns:
+            Cleaned text
+        """
+        if not text:
+            return text
+            
+        # Normalize text with NFKD (recommended for most cases)
+        text = cls.normalize_text(text)
+        
+        if remove_control_chars:
+            # Remove control characters except common whitespace
+            text = ''.join(char for char in text 
+                          if unicodedata.category(char)[0] != 'C' 
+                          or char in ('\n', '\t', '\r'))
+            
+        return text
+
+    @staticmethod
+    def is_valid_unicode(text: str) -> bool:
+        """
+        Check if text contains valid Unicode characters.
+        
+        Args:
+            text: Text to validate
+            
+        Returns:
+            True if text contains only valid Unicode, False otherwise
+        """
+        try:
+            text.encode('utf-8').decode('utf-8')
+            return True
+        except UnicodeError:
+            return False
+        
 class PDFContentExtractor:
-    def __init__(self, page: Page, size_to_level: Dict[float, str], normal_text_size: float):
+    def __init__(self, page: Page, size_to_level: Dict[float, str], normal_text_size: float, ligature_handler: LigatureHandler):
         self.page = page
         self.size_to_level = size_to_level
         self.normal_text_size = normal_text_size
+        self.ligature_handler = ligature_handler
 
     @staticmethod
     def sanitize_cell(cell: Optional[str]) -> str:
@@ -166,6 +270,9 @@ class PDFContentExtractor:
 
     def _process_text_line(self, text: str, size: float, top: float, fontname: Optional[str]) -> TextContent:
         """Process a line of text and create appropriate TextContent."""
+        # Clean and normalize text before processing
+        text = self.ligature_handler.clean_extracted_text(text)
+
         rounded_size = round_font_size(size)
         style = TextStyle(is_bold=is_bold_font(fontname), font_name=fontname)
         
@@ -323,13 +430,59 @@ class PDF2Markdown4LLM:
                  table_header: str = "###",
                  skip_empty_tables: bool = False, 
                  keep_empty_table_header: bool = False,
-                 progress_callback: Optional[ProgressCallback] = None):
+                 progress_callback: Optional[ProgressCallback] = None,
+                 ligature_handler: Optional[LigatureHandler] = None,
+                 custom_ligatures: Optional[Dict[str, str]] = None):
+        """
+        Initialize PDF to Markdown converter with configurable ligature handling.
+        
+        Args:
+            remove_headers: Whether to remove headers from the output
+            table_header: Header level for tables
+            skip_empty_tables: Whether to skip empty tables
+            keep_empty_table_header: Whether to keep headers for empty tables
+            progress_callback: Callback function for progress updates
+            ligature_handler: Custom LigatureHandler instance
+            custom_ligatures: Dictionary of custom ligature mappings to add/override
+        """
         self.remove_headers = remove_headers
         self.table_header = table_header
         self.skip_empty_tables = skip_empty_tables
         self.keep_empty_table_header = keep_empty_table_header
         self.markdown_converter = MarkdownConverter()
         self.progress_callback = progress_callback
+        
+        # Initialize ligature handler
+        if ligature_handler is not None:
+            self.ligature_handler = ligature_handler
+        else:
+            self.ligature_handler = LigatureHandler()
+            
+        # Add custom ligatures if provided
+        if custom_ligatures:
+            self.ligature_handler.EXTENDED_LIGATURES.update(custom_ligatures)
+
+    def update_ligature_mappings(self, new_mappings: Dict[str, str], overwrite: bool = False) -> None:
+        """
+        Update ligature mappings in the handler.
+        
+        Args:
+            new_mappings: Dictionary of new ligature mappings
+            overwrite: If True, replace all existing mappings with new ones
+        """
+        if overwrite:
+            self.ligature_handler.EXTENDED_LIGATURES = new_mappings.copy()
+        else:
+            self.ligature_handler.EXTENDED_LIGATURES.update(new_mappings)
+
+    def set_ligature_handler(self, handler: LigatureHandler) -> None:
+        """
+        Set a new ligature handler.
+        
+        Args:
+            handler: New LigatureHandler instance to use
+        """
+        self.ligature_handler = handler
 
     def _is_table_empty(self, table: Table) -> bool:
         """
@@ -505,7 +658,8 @@ class PDF2Markdown4LLM:
                 extractor = PDFContentExtractor(
                     page, 
                     classifier.size_to_level, 
-                    classifier.normal_text_size
+                    classifier.normal_text_size,
+                    ligature_handler=self.ligature_handler
                 )
                 contents = extractor.extract_contents()
                 
