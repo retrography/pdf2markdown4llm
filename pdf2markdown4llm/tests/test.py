@@ -37,3 +37,21 @@ with open(r"pdf2markdown4llm\tests\ligatures_test2.md", "r", encoding="utf-8") a
     
 assert md_content == expected_md_content, "Markdown content does not match the expected content."
 
+
+md_content = converter.convert(r"pdf2markdown4llm\tests\ligatures_test3.pdf")
+with open(r"pdf2markdown4llm\tests\ligatures_test3.md", "r", encoding="utf-8") as md_file:
+    expected_md_content = md_file.read()
+    
+assert md_content == expected_md_content, "Markdown content does not match the expected content."
+
+md_content = converter.convert(r"pdf2markdown4llm\tests\ligatures_test4.pdf")
+with open(r"pdf2markdown4llm\tests\ligatures_test4.md", "r", encoding="utf-8") as md_file:
+    expected_md_content = md_file.read()
+    
+assert md_content == expected_md_content, "Markdown content does not match the expected content."
+
+md_content = converter.convert(r"pdf2markdown4llm\tests\ligatures_test5.pdf")
+with open(r"pdf2markdown4llm\tests\ligatures_test5.md", "r", encoding="utf-8") as md_file:
+    expected_md_content = md_file.read()
+    
+assert md_content == expected_md_content, "Markdown content does not match the expected content."

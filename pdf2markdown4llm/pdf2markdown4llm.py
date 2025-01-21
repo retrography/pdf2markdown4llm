@@ -153,39 +153,10 @@ class FontSizeClassifier:
 class LigatureHandler:
     """Handles ligature normalization and character encoding issues in PDF text extraction."""
     
-    # Expanded ligature mappings including more common combinations
-    EXTENDED_LIGATURES: Dict[str, str] = {
-        # Standard Latin ligatures
-        "ﬀ": "ff",    # U+FB00
-        "ﬃ": "ffi",   # U+FB03
-        "ﬄ": "ffl",   # U+FB04
-        "ﬁ": "fi",    # U+FB01
-        "ﬂ": "fl",    # U+FB02
+    def __init__(self, normalization_mode: str = 'NFKD'):
+        self.normalization_mode = normalization_mode
         
-        # Additional common typographic ligatures
-        "ﬆ": "st",    # U+FB06
-        "ﬅ": "ft",    # U+FB05
-        "Æ": "AE",    # U+00C6
-        "æ": "ae",    # U+00E6
-        "Œ": "OE",    # U+0152
-        "œ": "oe",    # U+0153
-        
-        # Common typesetting combinations
-        "ﬃ": "ffi",   # Repeated for completeness
-        "ﬄ": "ffl",   # Repeated for completeness
-        "ﬁ": "fi",    # Repeated for completeness
-        "ﬂ": "fl",    # Repeated for completeness
-        "ﬀ": "ff",    # Repeated for completeness
-        
-        # Additional discretionary ligatures
-        "ct": "ct",   # Sometimes appears as a single glyph
-        "sp": "sp",   # Sometimes appears as a single glyph
-        "st": "st",   # Sometimes appears as a single glyph
-        "tt": "tt",   # Sometimes appears as a single glyph
-    }
-
-    @classmethod
-    def normalize_text(cls, text: str, normalization_mode: str = 'NFKD') -> str:
+    def normalize_text(self, text: str) -> str:
         """
         Normalize text by handling ligatures and applying Unicode normalization.
         
@@ -199,20 +170,15 @@ class LigatureHandler:
         if not text:
             return text
             
-        # First handle known ligatures
-        for ligature, replacement in cls.EXTENDED_LIGATURES.items():
-            text = text.replace(ligature, replacement)
-            
         # Apply Unicode normalization
-        text = unicodedata.normalize(normalization_mode, text)
+        text = unicodedata.normalize(self.normalization_mode, text)
         
         # Remove NULL bytes
         text = text.replace('\x00', '')
         
         return text
 
-    @classmethod
-    def clean_extracted_text(cls, text: str, remove_control_chars: bool = True) -> str:
+    def clean_extracted_text(self, text: str, remove_control_chars: bool = True) -> str:
         """
         Clean extracted text by removing problematic characters and normalizing content.
         
@@ -227,7 +193,7 @@ class LigatureHandler:
             return text
             
         # Normalize text with NFKD (recommended for most cases)
-        text = cls.normalize_text(text)
+        text = self.normalize_text(text)
         
         if remove_control_chars:
             # Remove control characters except common whitespace
@@ -237,22 +203,6 @@ class LigatureHandler:
             
         return text
 
-    @staticmethod
-    def is_valid_unicode(text: str) -> bool:
-        """
-        Check if text contains valid Unicode characters.
-        
-        Args:
-            text: Text to validate
-            
-        Returns:
-            True if text contains only valid Unicode, False otherwise
-        """
-        try:
-            text.encode('utf-8').decode('utf-8')
-            return True
-        except UnicodeError:
-            return False
         
 class PDFContentExtractor:
     def __init__(self, page: Page, size_to_level: Dict[float, str], normal_text_size: float, ligature_handler: LigatureHandler):
@@ -431,8 +381,7 @@ class PDF2Markdown4LLM:
                  skip_empty_tables: bool = False, 
                  keep_empty_table_header: bool = False,
                  progress_callback: Optional[ProgressCallback] = None,
-                 ligature_handler: Optional[LigatureHandler] = None,
-                 custom_ligatures: Optional[Dict[str, str]] = None):
+                 normalization_mode: Optional[str] = 'NFKD',):
         """
         Initialize PDF to Markdown converter with configurable ligature handling.
         
@@ -451,38 +400,8 @@ class PDF2Markdown4LLM:
         self.keep_empty_table_header = keep_empty_table_header
         self.markdown_converter = MarkdownConverter()
         self.progress_callback = progress_callback
-        
-        # Initialize ligature handler
-        if ligature_handler is not None:
-            self.ligature_handler = ligature_handler
-        else:
-            self.ligature_handler = LigatureHandler()
-            
-        # Add custom ligatures if provided
-        if custom_ligatures:
-            self.ligature_handler.EXTENDED_LIGATURES.update(custom_ligatures)
+        self.ligature_handler = LigatureHandler(normalization_mode=normalization_mode)
 
-    def update_ligature_mappings(self, new_mappings: Dict[str, str], overwrite: bool = False) -> None:
-        """
-        Update ligature mappings in the handler.
-        
-        Args:
-            new_mappings: Dictionary of new ligature mappings
-            overwrite: If True, replace all existing mappings with new ones
-        """
-        if overwrite:
-            self.ligature_handler.EXTENDED_LIGATURES = new_mappings.copy()
-        else:
-            self.ligature_handler.EXTENDED_LIGATURES.update(new_mappings)
-
-    def set_ligature_handler(self, handler: LigatureHandler) -> None:
-        """
-        Set a new ligature handler.
-        
-        Args:
-            handler: New LigatureHandler instance to use
-        """
-        self.ligature_handler = handler
 
     def _is_table_empty(self, table: Table) -> bool:
         """
@@ -681,9 +600,11 @@ class PDF2Markdown4LLM:
                             continue
                         
                         md_content.append(
-                            self.markdown_converter.table_to_markdown(
-                                content.table, 
-                                self.table_header
+                            self.ligature_handler.clean_extracted_text(
+                                self.markdown_converter.table_to_markdown(
+                                    content.table, 
+                                    self.table_header
+                                )
                             )
                         )
             
@@ -697,5 +618,4 @@ class PDF2Markdown4LLM:
             self._report_progress(completion_progress)
             
             return "".join(md_content)
-
 
