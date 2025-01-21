@@ -1,12 +1,11 @@
 from dataclasses import dataclass
-from typing import List, Dict, Tuple, Optional, Union, Callable
+from typing import List, Dict, Tuple, Optional, Union, Callable, Literal
 from collections import Counter
 import re
 import pdfplumber
 from pdfplumber.page import Page
 from pdfplumber.table import Table
 from enum import Enum
-import unicodedata
 
 class ProcessPhase(Enum):
     ANALYSIS = "analysis"
@@ -149,67 +148,12 @@ class FontSizeClassifier:
         self.size_to_level = {
             size: level for size, level in zip(heading_sizes, levels)
         }
-
-class LigatureHandler:
-    """Handles ligature normalization and character encoding issues in PDF text extraction."""
     
-    def __init__(self, normalization_mode: str = 'NFKD'):
-        self.normalization_mode = normalization_mode
-        
-    def normalize_text(self, text: str) -> str:
-        """
-        Normalize text by handling ligatures and applying Unicode normalization.
-        
-        Args:
-            text: Input text to normalize
-            normalization_mode: Unicode normalization mode ('NFC', 'NFKC', 'NFD', 'NFKD')
-        
-        Returns:
-            Normalized text with expanded ligatures
-        """
-        if not text:
-            return text
-            
-        # Apply Unicode normalization
-        text = unicodedata.normalize(self.normalization_mode, text)
-        
-        # Remove NULL bytes
-        text = text.replace('\x00', '')
-        
-        return text
-
-    def clean_extracted_text(self, text: str, remove_control_chars: bool = True) -> str:
-        """
-        Clean extracted text by removing problematic characters and normalizing content.
-        
-        Args:
-            text: Input text to clean
-            remove_control_chars: Whether to remove control characters
-            
-        Returns:
-            Cleaned text
-        """
-        if not text:
-            return text
-            
-        # Normalize text with NFKD (recommended for most cases)
-        text = self.normalize_text(text)
-        
-        if remove_control_chars:
-            # Remove control characters except common whitespace
-            text = ''.join(char for char in text 
-                          if unicodedata.category(char)[0] != 'C' 
-                          or char in ('\n', '\t', '\r'))
-            
-        return text
-
-        
 class PDFContentExtractor:
-    def __init__(self, page: Page, size_to_level: Dict[float, str], normal_text_size: float, ligature_handler: LigatureHandler):
+    def __init__(self, page: Page, size_to_level: Dict[float, str], normal_text_size: float):
         self.page = page
         self.size_to_level = size_to_level
         self.normal_text_size = normal_text_size
-        self.ligature_handler = ligature_handler
 
     @staticmethod
     def sanitize_cell(cell: Optional[str]) -> str:
@@ -220,8 +164,6 @@ class PDFContentExtractor:
 
     def _process_text_line(self, text: str, size: float, top: float, fontname: Optional[str]) -> TextContent:
         """Process a line of text and create appropriate TextContent."""
-        # Clean and normalize text before processing
-        text = self.ligature_handler.clean_extracted_text(text)
 
         rounded_size = round_font_size(size)
         style = TextStyle(is_bold=is_bold_font(fontname), font_name=fontname)
@@ -381,7 +323,7 @@ class PDF2Markdown4LLM:
                  skip_empty_tables: bool = False, 
                  keep_empty_table_header: bool = False,
                  progress_callback: Optional[ProgressCallback] = None,
-                 normalization_mode: Optional[str] = 'NFKD',):
+                 normalization_mode: Optional[Literal["NFC", "NFKC", "NFD", "NFKD"]] = "NFKD",):
         """
         Initialize PDF to Markdown converter with configurable ligature handling.
         
@@ -400,8 +342,7 @@ class PDF2Markdown4LLM:
         self.keep_empty_table_header = keep_empty_table_header
         self.markdown_converter = MarkdownConverter()
         self.progress_callback = progress_callback
-        self.ligature_handler = LigatureHandler(normalization_mode=normalization_mode)
-
+        self.normalization_mode = normalization_mode
 
     def _is_table_empty(self, table: Table) -> bool:
         """
@@ -536,7 +477,7 @@ class PDF2Markdown4LLM:
     
     def convert(self, pdf_path: str) -> str:
         """Convert PDF to Markdown with detailed progress tracking."""
-        with pdfplumber.open(pdf_path) as pdf:
+        with pdfplumber.open(pdf_path, unicode_norm=self.normalization_mode) as pdf:
             # Initial progress report
             initial_progress = self._create_progress_info(
                 phase=ProcessPhase.ANALYSIS,
@@ -578,7 +519,6 @@ class PDF2Markdown4LLM:
                     page, 
                     classifier.size_to_level, 
                     classifier.normal_text_size,
-                    ligature_handler=self.ligature_handler
                 )
                 contents = extractor.extract_contents()
                 
@@ -600,11 +540,9 @@ class PDF2Markdown4LLM:
                             continue
                         
                         md_content.append(
-                            self.ligature_handler.clean_extracted_text(
-                                self.markdown_converter.table_to_markdown(
+                            self.markdown_converter.table_to_markdown(
                                     content.table, 
                                     self.table_header
-                                )
                             )
                         )
             
@@ -617,5 +555,4 @@ class PDF2Markdown4LLM:
             )
             self._report_progress(completion_progress)
             
-            return "".join(md_content)
-
+            return "".join(md_content).replace('\x00', '')
