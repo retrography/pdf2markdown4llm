@@ -2,9 +2,16 @@ from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional, Union, Callable, Literal
 from collections import Counter
 import re
+import os
+import io
+from pathlib import Path
+from PIL import Image
 import pdfplumber
 from pdfplumber.page import Page
 from pdfplumber.table import Table
+from pdfminer.layout import LTImage, LTFigure
+from pdfminer.high_level import extract_pages
+from pdfminer.image import ImageWriter
 from enum import Enum
 
 class ProcessPhase(Enum):
@@ -39,7 +46,15 @@ class TableContent:
     table: Table
     top: float
 
-Content = Union[TextContent, TableContent]
+@dataclass
+class ImageContent:
+    """Image content information."""
+    image_path: str  # Path to the saved image file
+    alt_text: str    # Alternative text for the image
+    top: float       # Position on the page
+    page_num: int    # Page number where the image appears
+
+Content = Union[TextContent, TableContent, ImageContent]
 ProgressCallback = Callable[[ProgressInfo], None]
 
 
@@ -323,9 +338,12 @@ class PDF2Markdown4LLM:
                  skip_empty_tables: bool = False, 
                  keep_empty_table_header: bool = False,
                  progress_callback: Optional[ProgressCallback] = None,
-                 normalization_mode: Optional[Literal["NFC", "NFKC", "NFD", "NFKD"]] = "NFKD",):
+                 normalization_mode: Optional[Literal["NFC", "NFKC", "NFD", "NFKD"]] = "NFKD",
+                 extract_images: bool = True,
+                 page_demarcation: Literal["none", "rule", "split"] = "none",
+                 output_dir: Optional[str] = None):
         """
-        Initialize PDF to Markdown converter with configurable ligature handling.
+        Initialize PDF to Markdown converter with configurable options.
         
         Args:
             remove_headers: Whether to remove headers from the output
@@ -333,9 +351,18 @@ class PDF2Markdown4LLM:
             skip_empty_tables: Whether to skip empty tables
             keep_empty_table_header: Whether to keep headers for empty tables
             progress_callback: Callback function for progress updates
-            ligature_handler: Custom LigatureHandler instance
-            custom_ligatures: Dictionary of custom ligature mappings to add/override
+            normalization_mode: Unicode normalization mode for text extraction
+            extract_images: Whether to extract images from the PDF
+            page_demarcation: How to mark page boundaries:
+                - "none": No page demarcation (default)
+                - "rule": Add horizontal rule with page number between pages
+                - "split": Split output into separate files per page
+            output_dir: Directory to save extracted images and split page files
+                        (defaults to same directory as output file)
         """
+        self.extract_images = extract_images
+        self.page_demarcation = page_demarcation
+        self.output_dir = output_dir
         self.remove_headers = remove_headers
         self.table_header = table_header
         self.skip_empty_tables = skip_empty_tables
@@ -475,8 +502,159 @@ class PDF2Markdown4LLM:
             return f"{self.table_header}\n\n"  # Returns only the header.
         return ""  # Returns an empty string if skipping completely.
     
-    def convert(self, pdf_path: str) -> str:
-        """Convert PDF to Markdown with detailed progress tracking."""
+    def _extract_images(self, pdf_path: str, output_dir: str) -> Dict[int, List[ImageContent]]:
+        """
+        Extract images from PDF using pdfminer.six's ImageWriter.
+        
+        Args:
+            pdf_path: Path to the PDF file
+            output_dir: Directory to save extracted images
+            
+        Returns:
+            Dictionary mapping page numbers to lists of ImageContent objects
+        """
+        # Create output directory if it doesn't exist
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Dictionary to store images by page
+        images_by_page: Dict[int, List[ImageContent]] = {}
+        
+        # Create a temporary directory for initial image extraction
+        temp_dir = os.path.join(output_dir, "temp")
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        # Create an ImageWriter instance
+        image_writer = ImageWriter(temp_dir)
+        
+        # Process each page
+        for i, page_layout in enumerate(extract_pages(pdf_path)):
+            page_num = i + 1
+            page_images = []
+            
+            # Process each element on the page
+            for element in page_layout:
+                # Check if element is an image
+                if isinstance(element, LTImage):
+                    try:
+                        # Use ImageWriter to save the image
+                        image_filename = image_writer.export_image(element)
+                        temp_image_path = os.path.join(temp_dir, image_filename)
+                        
+                        # Get file extension
+                        _, ext = os.path.splitext(image_filename)
+                        
+                        # Create new filename with page prefix
+                        new_filename = f"page{page_num}_{image_filename}"
+                        new_image_path = os.path.join(output_dir, new_filename)
+                        
+                        # Copy the file to the output directory with the new name
+                        with open(temp_image_path, 'rb') as src, open(new_image_path, 'wb') as dst:
+                            dst.write(src.read())
+                        
+                        # Create ImageContent object
+                        image_content = ImageContent(
+                            image_path=new_image_path,
+                            alt_text=f"Image from page {page_num}",
+                            top=element.y0,
+                            page_num=page_num
+                        )
+                        page_images.append(image_content)
+                    except Exception as e:
+                        # Skip images that can't be processed
+                        continue
+                
+                # Check if element is a figure (might contain images)
+                elif isinstance(element, LTFigure):
+                    for figure_element in element:
+                        if isinstance(figure_element, LTImage):
+                            try:
+                                # Use ImageWriter to save the image
+                                image_filename = image_writer.export_image(figure_element)
+                                temp_image_path = os.path.join(temp_dir, image_filename)
+                                
+                                # Get file extension
+                                _, ext = os.path.splitext(image_filename)
+                                
+                                # Create new filename with page prefix
+                                new_filename = f"page{page_num}_{image_filename}"
+                                new_image_path = os.path.join(output_dir, new_filename)
+                                
+                                # Copy the file to the output directory with the new name
+                                with open(temp_image_path, 'rb') as src, open(new_image_path, 'wb') as dst:
+                                    dst.write(src.read())
+                                
+                                # Create ImageContent object
+                                image_content = ImageContent(
+                                    image_path=new_image_path,
+                                    alt_text=f"Figure from page {page_num}",
+                                    top=figure_element.y0,
+                                    page_num=page_num
+                                )
+                                page_images.append(image_content)
+                            except Exception as e:
+                                # Skip images that can't be processed
+                                continue
+            
+            # Store images for this page
+            if page_images:
+                images_by_page[page_num] = sorted(page_images, key=lambda x: x.top)
+        
+        # Clean up temporary directory
+        import shutil
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        
+        return images_by_page
+    
+    def _apply_page_demarcation(self, content: str, page_num: int, total_pages: int) -> str:
+        """Apply page demarcation according to the selected option."""
+        if self.page_demarcation == "none":
+            return content
+        elif self.page_demarcation == "rule":
+            return f"\n\n---\n**Page {page_num} of {total_pages}**\n---\n\n{content}"
+        else:
+            # For "split" option, we just return the content as is
+            # The actual splitting happens in the convert method
+            return content
+    
+    def convert(self, pdf_path: str, output_path: Optional[str] = None) -> str:
+        """
+        Convert PDF to Markdown with detailed progress tracking.
+        
+        Args:
+            pdf_path: Path to the PDF file
+            output_path: Path to save the output markdown file (optional)
+                         If not provided, the function will just return the markdown content
+        
+        Returns:
+            Markdown content as a string
+        """
+        # Determine output directory for images and split files
+        if output_path:
+            output_dir = os.path.dirname(os.path.abspath(output_path))
+            base_name = os.path.splitext(os.path.basename(output_path))[0]
+        else:
+            output_dir = os.path.dirname(os.path.abspath(pdf_path))
+            base_name = os.path.splitext(os.path.basename(pdf_path))[0]
+        
+        # Override with user-specified output directory if provided
+        if self.output_dir:
+            output_dir = self.output_dir
+        
+        # Create media directory for images
+        media_dir = f"{os.path.join(output_dir, base_name)}_media"
+        
+        # Extract images if enabled
+        images_by_page = {}
+        if self.extract_images:
+            progress_info = self._create_progress_info(
+                phase=ProcessPhase.ANALYSIS,
+                current_page=0,
+                total_pages=1,
+                message="Extracting images"
+            )
+            self._report_progress(progress_info)
+            images_by_page = self._extract_images(pdf_path, media_dir)
+        
         with pdfplumber.open(pdf_path, unicode_norm=self.normalization_mode) as pdf:
             # Initial progress report
             initial_progress = self._create_progress_info(
@@ -503,8 +681,14 @@ class PDF2Markdown4LLM:
             self._report_progress(analysis_complete)
             
             classifier = FontSizeClassifier(font_sizes, font_size_text_count)
-            md_content: List[str] = []
             total_pages = len(pdf.pages)
+            
+            # For split mode, we'll store content for each page separately
+            if self.page_demarcation == "split":
+                page_contents = {}
+            else:
+                # For other modes, we'll collect all content in a single list
+                md_content: List[str] = []
             
             for i, page in enumerate(pdf.pages, 1):
                 progress_info = self._create_progress_info(
@@ -515,6 +699,18 @@ class PDF2Markdown4LLM:
                 )
                 self._report_progress(progress_info)
                 
+                # For split mode, create a new content list for this page
+                if self.page_demarcation == "split":
+                    page_md_content: List[str] = []
+                    current_content = page_md_content
+                else:
+                    current_content = md_content
+                
+                # Add page demarcation if needed (except for first page in non-split mode)
+                if self.page_demarcation == "rule" and i > 1:
+                    current_content.append(f"\n\n---\n**Page {i} of {total_pages}**\n---\n\n")
+                
+                # Extract content from the page
                 extractor = PDFContentExtractor(
                     page, 
                     classifier.size_to_level, 
@@ -522,6 +718,13 @@ class PDF2Markdown4LLM:
                 )
                 contents = extractor.extract_contents()
                 
+                # Add extracted images for this page if available
+                if self.extract_images and i in images_by_page:
+                    # Merge images with other content and sort by position
+                    contents.extend(images_by_page[i])
+                    contents.sort(key=lambda x: x.top)
+                
+                # Process all content
                 for content in contents:
                     if isinstance(content, TextContent):
                         text = content.text.strip()
@@ -530,21 +733,29 @@ class PDF2Markdown4LLM:
                                 text = self.markdown_converter.remove_markdown_headers(text)
                             
                             if content.is_header:
-                                md_content.append(f"\n{content.level} {text}\n\n")
+                                current_content.append(f"\n{content.level} {text}\n\n")
                             else:
-                                md_content.append(f"{text}\n")
+                                current_content.append(f"{text}\n")
                     elif isinstance(content, TableContent):
                         # Check for empty tables and skip according to settings
                         if self.skip_empty_tables and self._is_table_empty(content.table):
-                            md_content.append(self._process_empty_table())
+                            current_content.append(self._process_empty_table())
                             continue
                         
-                        md_content.append(
+                        current_content.append(
                             self.markdown_converter.table_to_markdown(
                                     content.table, 
                                     self.table_header
                             )
                         )
+                    elif isinstance(content, ImageContent):
+                        # Add image reference to markdown
+                        rel_path = os.path.relpath(content.image_path, output_dir)
+                        current_content.append(f"\n![{content.alt_text}]({rel_path})\n\n")
+                
+                # For split mode, store the page content
+                if self.page_demarcation == "split":
+                    page_contents[i] = "".join(page_md_content).replace('\x00', '')
             
             # Final progress report
             completion_progress = self._create_progress_info(
@@ -555,4 +766,17 @@ class PDF2Markdown4LLM:
             )
             self._report_progress(completion_progress)
             
-            return "".join(md_content).replace('\x00', '')
+            # Handle output based on page demarcation mode
+            if self.page_demarcation == "split" and output_path:
+                # Save each page to a separate file
+                output_base = os.path.splitext(output_path)[0]
+                for page_num, content in page_contents.items():
+                    page_path = f"{output_base}_page{page_num}.md"
+                    with open(page_path, "w", encoding="utf-8") as f:
+                        f.write(content)
+                
+                # Return the content of the first page as a sample
+                return page_contents.get(1, "")
+            else:
+                # For other modes, return the combined content
+                return "".join(md_content).replace('\x00', '')

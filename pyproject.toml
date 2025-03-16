@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pdf2markdown4llm"
-version = "0.1.9"
+version = "0.2.0"
 description = "A library to convert PDF files to Markdown format."
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -20,10 +20,15 @@ classifiers = [
 
 dependencies = [
     "pdfplumber>=0.10",
+    "pillow>=9.0.0",
+    "pdfminer.six[image]>=20221105",
 ]
 
 [project.urls]
 Homepage = "https://github.com/HawkClaws/pdf2markdown4llm"
+
+[project.scripts]
+pdf2md = "pdf2markdown4llm.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

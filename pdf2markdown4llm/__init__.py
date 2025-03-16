@@ -1,1 +1,1 @@
-from pdf2markdown4llm.pdf2markdown4llm import PDF2Markdown4LLM
+from pdf2markdown4llm.pdf2markdown4llm import PDF2Markdown4LLM, ProgressInfo, ProcessPhase
