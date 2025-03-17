@@ -13,48 +13,97 @@ from pathlib import Path
 from typing import List, Optional, Any, Iterable, Tuple
 from pdf2markdown4llm import PDF2Markdown4LLM, ProgressInfo
 
-class LongFormHelpFormatter(argparse.HelpFormatter):
-    """Custom help formatter that shows only long-form options in the usage line."""
+class CustomHelpFormatter(argparse.HelpFormatter):
+    """Custom help formatter that shows options with a forward slash separator."""
     
-    def _format_actions_usage(self, actions, groups):
-        """Override to use long-form options in the usage line."""
-        # Get all option actions
-        option_actions = [action for action in actions if action.option_strings]
+    def _get_default_usage(self) -> str:
+        """Override to customize the usage line."""
+        prog = self._prog
         
-        # Replace short-form options with long-form options
-        for action in option_actions:
-            if len(action.option_strings) > 1:
-                # Find the long-form option (starts with --)
-                long_option = next((opt for opt in action.option_strings if opt.startswith('--')), action.option_strings[0])
-                # Replace all option strings with just the long-form option
-                action.option_strings = [long_option]
+        # Get the original usage string
+        actions = self._actions
+        mutually_exclusive = self._mutually_exclusive_groups
         
-        # Call the parent method to format the usage
-        return super()._format_actions_usage(actions, groups)
+        # Format each action for the usage line
+        action_usage = []
+        
+        for action in actions:
+            if action.option_strings:
+                # For options with both short and long forms
+                if len(action.option_strings) > 1:
+                    # Find the short and long options
+                    short_option = next((opt for opt in action.option_strings if not opt.startswith('--')), None)
+                    long_option = next((opt for opt in action.option_strings if opt.startswith('--')), None)
+                    
+                    if short_option and long_option:
+                        # Format as [short/long]
+                        option_str = f"[{short_option}/{long_option}]"
+                    else:
+                        # If only one form exists, use it
+                        option_str = f"[{action.option_strings[0]}]"
+                    
+                    # Add metavar if needed
+                    if action.nargs != 0:
+                        default = self._get_default_metavar_for_optional(action)
+                        metavar, = self._metavar_formatter(action, default)(1)
+                        option_str = f"{option_str} {metavar}"
+                    
+                    action_usage.append(option_str)
+                else:
+                    # For options with only one form
+                    option_str = f"[{action.option_strings[0]}]"
+                    
+                    # Add metavar if needed
+                    if action.nargs != 0:
+                        default = self._get_default_metavar_for_optional(action)
+                        metavar, = self._metavar_formatter(action, default)(1)
+                        option_str = f"{option_str} {metavar}"
+                    
+                    action_usage.append(option_str)
+            else:
+                # For positional arguments
+                default = self._get_default_metavar_for_positional(action)
+                metavar, = self._metavar_formatter(action, default)(1)
+                action_usage.append(metavar)
+        
+        # Join all the action usage strings
+        usage = f"{prog} {' '.join(action_usage)}"
+        
+        # Add the help text
+        return f"{usage}"
     
     def _format_action_invocation(self, action: argparse.Action) -> str:
-        """Format the action invocation to include only long-form options."""
+        """Format the action invocation with a forward slash separator."""
         if not action.option_strings:
+            # For positional arguments
             default = self._get_default_metavar_for_positional(action)
             metavar, = self._metavar_formatter(action, default)(1)
             return metavar
         
         # For options with both short and long forms
         if len(action.option_strings) > 1:
-            # Find the long-form option (starts with --)
-            long_option = next((opt for opt in action.option_strings if opt.startswith('--')), action.option_strings[0])
+            # Find the short and long options
+            short_option = next((opt for opt in action.option_strings if not opt.startswith('--')), None)
+            long_option = next((opt for opt in action.option_strings if opt.startswith('--')), None)
+            
+            if short_option and long_option:
+                # Format as [short/long]
+                option_str = f"[{short_option}/{long_option}]"
+            else:
+                # If only one form exists, use it
+                option_str = f"[{action.option_strings[0]}]"
             
             # Add metavar if needed
             if action.nargs != 0:
                 default = self._get_default_metavar_for_optional(action)
                 metavar, = self._metavar_formatter(action, default)(1)
-                return f"{long_option} {metavar}"
+                return f"{option_str} {metavar}"
             
-            return long_option
+            return option_str
         
         # For options with only one form (e.g., --remove-headers)
         else:
-            parts = [action.option_strings[0]]
+            parts = [f"[{action.option_strings[0]}]"]
             
             # Add metavar if needed
             if action.nargs != 0:
@@ -72,9 +121,17 @@ def progress_callback(progress: ProgressInfo) -> None:
 
 def parse_arguments() -> argparse.Namespace:
     """Parse command line arguments."""
+    # Create a custom usage string with forward slash format
+    usage = "%(prog)s [-h/--help] [-o/--output-dir OUTPUT_DIR] [-n/--no-images] " \
+            "[-p/--page-demarcation {none,rule,split}] [--remove-headers] " \
+            "[--table-header TABLE_HEADER] [--keep-empty-tables] " \
+            "[--keep-empty-table-header] [--no-progress] " \
+            "input_files [input_files ...]"
+    
     parser = argparse.ArgumentParser(
         description="Convert PDF files to Markdown format with options for image extraction and page demarcation.",
-        formatter_class=LongFormHelpFormatter
+        formatter_class=CustomHelpFormatter,
+        usage=usage
     )
     
     # Input and output options
@@ -116,9 +173,9 @@ def parse_arguments() -> argparse.Namespace:
         help="Header level for tables (default: ###)"
     )
     parser.add_argument(
-        "--skip-empty-tables", 
+        "--keep-empty-tables", 
         action="store_true", 
-        help="Skip empty tables in the output"
+        help="Keep empty tables in the output (default: skip empty tables)"
     )
     parser.add_argument(
         "--keep-empty-table-header", 
@@ -142,7 +199,7 @@ def convert_pdf_to_markdown(
     page_demarcation: str = "none",
     remove_headers: bool = False,
     table_header: str = "###",
-    skip_empty_tables: bool = False,
+    skip_empty_tables: bool = True,
     keep_empty_table_header: bool = False,
     show_progress: bool = True
 ) -> None:
@@ -221,7 +278,7 @@ def main() -> None:
             page_demarcation=args.page_demarcation,
             remove_headers=args.remove_headers,
             table_header=args.table_header,
-            skip_empty_tables=args.skip_empty_tables,
+            skip_empty_tables=not args.keep_empty_tables,  # Invert the flag
             keep_empty_table_header=args.keep_empty_table_header,
             show_progress=not args.no_progress
         )
