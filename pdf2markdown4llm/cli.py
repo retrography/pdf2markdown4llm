@@ -10,8 +10,59 @@ import os
 import sys
 import argparse
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Any, Iterable, Tuple
 from pdf2markdown4llm import PDF2Markdown4LLM, ProgressInfo
+
+class LongFormHelpFormatter(argparse.HelpFormatter):
+    """Custom help formatter that shows only long-form options in the usage line."""
+    
+    def _format_actions_usage(self, actions, groups):
+        """Override to use long-form options in the usage line."""
+        # Get all option actions
+        option_actions = [action for action in actions if action.option_strings]
+        
+        # Replace short-form options with long-form options
+        for action in option_actions:
+            if len(action.option_strings) > 1:
+                # Find the long-form option (starts with --)
+                long_option = next((opt for opt in action.option_strings if opt.startswith('--')), action.option_strings[0])
+                # Replace all option strings with just the long-form option
+                action.option_strings = [long_option]
+        
+        # Call the parent method to format the usage
+        return super()._format_actions_usage(actions, groups)
+    
+    def _format_action_invocation(self, action: argparse.Action) -> str:
+        """Format the action invocation to include only long-form options."""
+        if not action.option_strings:
+            default = self._get_default_metavar_for_positional(action)
+            metavar, = self._metavar_formatter(action, default)(1)
+            return metavar
+        
+        # For options with both short and long forms
+        if len(action.option_strings) > 1:
+            # Find the long-form option (starts with --)
+            long_option = next((opt for opt in action.option_strings if opt.startswith('--')), action.option_strings[0])
+            
+            # Add metavar if needed
+            if action.nargs != 0:
+                default = self._get_default_metavar_for_optional(action)
+                metavar, = self._metavar_formatter(action, default)(1)
+                return f"{long_option} {metavar}"
+            
+            return long_option
+        
+        # For options with only one form (e.g., --remove-headers)
+        else:
+            parts = [action.option_strings[0]]
+            
+            # Add metavar if needed
+            if action.nargs != 0:
+                default = self._get_default_metavar_for_optional(action)
+                metavar, = self._metavar_formatter(action, default)(1)
+                parts.append(metavar)
+            
+            return ' '.join(parts)
 
 def progress_callback(progress: ProgressInfo) -> None:
     """Callback function to display progress information."""
@@ -22,7 +73,8 @@ def progress_callback(progress: ProgressInfo) -> None:
 def parse_arguments() -> argparse.Namespace:
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Convert PDF files to Markdown format with options for image extraction and page demarcation."
+        description="Convert PDF files to Markdown format with options for image extraction and page demarcation.",
+        formatter_class=LongFormHelpFormatter
     )
     
     # Input and output options
@@ -48,7 +100,8 @@ def parse_arguments() -> argparse.Namespace:
         "-p", "--page-demarcation", 
         choices=["none", "rule", "split"], 
         default="none",
-        help="Page demarcation style: none (default), rule (horizontal rule with page number), or split (separate files per page)"
+        help="Page demarcation style: none (default), rule (horizontal rule with page number), or split (separate files per page)",
+        metavar="{none,rule,split}"
     )
     
     # Formatting options
