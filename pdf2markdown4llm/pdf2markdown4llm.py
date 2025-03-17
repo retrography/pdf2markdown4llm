@@ -4,6 +4,8 @@ from collections import Counter
 import re
 import os
 import io
+import csv
+import json
 from pathlib import Path
 from PIL import Image
 import pdfplumber
@@ -335,13 +337,14 @@ class PDF2Markdown4LLM:
     def __init__(self, 
                  remove_headers: bool = False, 
                  table_header: str = "###",
-                 skip_empty_tables: bool = False, 
+                 skip_empty_tables: bool = True, 
                  keep_empty_table_header: bool = False,
                  progress_callback: Optional[ProgressCallback] = None,
                  normalization_mode: Optional[Literal["NFC", "NFKC", "NFD", "NFKD"]] = "NFKD",
                  extract_images: bool = True,
                  page_demarcation: Literal["none", "rule", "split"] = "none",
-                 output_dir: Optional[str] = None):
+                 output_dir: Optional[str] = None,
+                 table_export_format: Optional[Literal["csv", "json"]] = None):
         """
         Initialize PDF to Markdown converter with configurable options.
         
@@ -359,6 +362,8 @@ class PDF2Markdown4LLM:
                 - "split": Split output into separate files per page
             output_dir: Directory to save extracted images and split page files
                         (defaults to same directory as output file)
+            table_export_format: Format to export tables (None, "csv", or "json")
+                                Tables will be exported to the media directory
         """
         self.extract_images = extract_images
         self.page_demarcation = page_demarcation
@@ -370,6 +375,7 @@ class PDF2Markdown4LLM:
         self.markdown_converter = MarkdownConverter()
         self.progress_callback = progress_callback
         self.normalization_mode = normalization_mode
+        self.table_export_format = table_export_format
 
     def _is_table_empty(self, table: Table) -> bool:
         """
@@ -605,6 +611,62 @@ class PDF2Markdown4LLM:
         
         return images_by_page
     
+    def _export_table_to_csv(self, table: Table, filepath: str) -> None:
+        """
+        Export a table to CSV format.
+        
+        Args:
+            table: The table to export
+            filepath: Path to save the CSV file
+        """
+        table_data = table.extract()
+        if not table_data:
+            return
+        
+        # Sanitize table data
+        sanitized_table = [[PDFContentExtractor.sanitize_cell(cell) for cell in row] 
+                          for row in table_data]
+        
+        # Write to CSV file
+        with open(filepath, 'w', newline='', encoding='utf-8') as csvfile:
+            writer = csv.writer(csvfile)
+            for row in sanitized_table:
+                writer.writerow(row)
+    
+    def _export_table_to_json(self, table: Table, filepath: str) -> None:
+        """
+        Export a table to JSON format.
+        
+        Args:
+            table: The table to export
+            filepath: Path to save the JSON file
+        """
+        table_data = table.extract()
+        if not table_data or len(table_data) < 2:  # Need at least headers and one row
+            return
+        
+        # Sanitize table data
+        sanitized_table = [[PDFContentExtractor.sanitize_cell(cell) for cell in row] 
+                          for row in table_data]
+        
+        # Get headers from first row
+        headers = sanitized_table[0]
+        
+        # Convert to list of dictionaries
+        json_data = []
+        for row in sanitized_table[1:]:
+            # Create a dictionary for each row, mapping headers to values
+            row_dict = {}
+            for i, header in enumerate(headers):
+                # Use empty string for missing values
+                value = row[i] if i < len(row) else ""
+                row_dict[header] = value
+            json_data.append(row_dict)
+        
+        # Write to JSON file
+        with open(filepath, 'w', encoding='utf-8') as jsonfile:
+            json.dump(json_data, jsonfile, indent=2, ensure_ascii=False)
+    
     def _apply_page_demarcation(self, content: str, page_num: int, total_pages: int) -> str:
         """Apply page demarcation according to the selected option."""
         if self.page_demarcation == "none":
@@ -742,6 +804,27 @@ class PDF2Markdown4LLM:
                             current_content.append(self._process_empty_table())
                             continue
                         
+                        # Export table to CSV or JSON if requested
+                        if self.table_export_format:
+                            # Create media directory if it doesn't exist
+                            os.makedirs(media_dir, exist_ok=True)
+                            
+                            # Generate a unique filename for the table
+                            table_index = len([f for f in os.listdir(media_dir) 
+                                              if f.startswith(f"page{i}_table") and 
+                                              f.endswith(f".{self.table_export_format}")])
+                            
+                            # Create the table filename with page number prefix
+                            table_filename = f"page{i}_table{table_index + 1}.{self.table_export_format}"
+                            table_filepath = os.path.join(media_dir, table_filename)
+                            
+                            # Export the table in the requested format
+                            if self.table_export_format == "csv":
+                                self._export_table_to_csv(content.table, table_filepath)
+                            elif self.table_export_format == "json":
+                                self._export_table_to_json(content.table, table_filepath)
+                        
+                        # Add table to markdown content
                         current_content.append(
                             self.markdown_converter.table_to_markdown(
                                     content.table, 
