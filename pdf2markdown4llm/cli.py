@@ -123,8 +123,8 @@ def parse_arguments() -> argparse.Namespace:
     """Parse command line arguments."""
     # Create a custom usage string with forward slash format
     usage = "%(prog)s [-h/--help] [-o/--output-dir OUTPUT_DIR] [-n/--no-images] " \
-            "[-p/--page-demarcation {none,rule,split}] [-t/--table-export {csv,json}] " \
-            "[--remove-headers] [--table-header TABLE_HEADER] [--keep-empty-tables] " \
+            "[-p/--page-demarcation {none,rule,split}] [--remove-headers] " \
+            "[--table-header TABLE_HEADER] [--skip-empty-tables] " \
             "[--keep-empty-table-header] [--no-progress] " \
             "input_files [input_files ...]"
     
@@ -161,14 +161,6 @@ def parse_arguments() -> argparse.Namespace:
         metavar="{none,rule,split}"
     )
     
-    # Table export options
-    parser.add_argument(
-        "-t", "--table-export", 
-        choices=["csv", "json"], 
-        help="Export tables to CSV or JSON files in the media directory",
-        metavar="{csv,json}"
-    )
-    
     # Formatting options
     parser.add_argument(
         "--remove-headers", 
@@ -181,9 +173,9 @@ def parse_arguments() -> argparse.Namespace:
         help="Header level for tables (default: ###)"
     )
     parser.add_argument(
-        "--keep-empty-tables", 
+        "--skip-empty-tables", 
         action="store_true", 
-        help="Keep empty tables in the output (default: skip empty tables)"
+        help="Skip empty tables in the output"
     )
     parser.add_argument(
         "--keep-empty-table-header", 
@@ -207,10 +199,9 @@ def convert_pdf_to_markdown(
     page_demarcation: str = "none",
     remove_headers: bool = False,
     table_header: str = "###",
-    skip_empty_tables: bool = True,
+    skip_empty_tables: bool = False,
     keep_empty_table_header: bool = False,
-    show_progress: bool = True,
-    table_export_format: Optional[str] = None
+    show_progress: bool = True
 ) -> None:
     """
     Convert a PDF file to Markdown format with the specified options.
@@ -225,7 +216,6 @@ def convert_pdf_to_markdown(
         skip_empty_tables: Whether to skip empty tables
         keep_empty_table_header: Whether to keep headers for empty tables
         show_progress: Whether to show progress information
-        table_export_format: Format to export tables (None, "csv", or "json")
     """
     # Validate input file
     if not os.path.isfile(input_file):
@@ -251,8 +241,7 @@ def convert_pdf_to_markdown(
         progress_callback=progress_callback if show_progress else None,
         extract_images=extract_images,
         page_demarcation=page_demarcation,
-        output_dir=output_dir,
-        table_export_format=table_export_format
+        output_dir=output_dir
     )
     
     try:
@@ -289,10 +278,9 @@ def main() -> None:
             page_demarcation=args.page_demarcation,
             remove_headers=args.remove_headers,
             table_header=args.table_header,
-            skip_empty_tables=not args.keep_empty_tables,  # Invert the flag
+            skip_empty_tables=args.skip_empty_tables,
             keep_empty_table_header=args.keep_empty_table_header,
-            show_progress=not args.no_progress,
-            table_export_format=args.table_export
+            show_progress=not args.no_progress
         )
 
 if __name__ == "__main__":
